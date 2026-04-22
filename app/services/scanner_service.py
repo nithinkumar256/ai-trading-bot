@@ -12,13 +12,31 @@ BASE_URL = "https://api.binance.com"
 # =========================
 def get_top_symbols(limit=30):
     try:
-        data = requests.get(f"{BASE_URL}/api/v3/ticker/24hr").json()
-    except:
+        response = requests.get(f"{BASE_URL}/api/v3/ticker/24hr")
+
+        # ✅ CHECK STATUS
+        if response.status_code != 200:
+            print("❌ Binance API error:", response.text)
+            return []
+
+        data = response.json()
+
+        # ✅ CRITICAL FIX
+        if not isinstance(data, list):
+            print("❌ Invalid Binance response:", data)
+            return []
+
+    except Exception as e:
+        print("❌ Fetch error:", e)
         return []
 
     valid_pairs = []
 
     for coin in data:
+        # ✅ SAFETY CHECK
+        if not isinstance(coin, dict):
+            continue
+
         symbol = coin.get("symbol")
 
         if not symbol or not symbol.endswith("USDT"):
