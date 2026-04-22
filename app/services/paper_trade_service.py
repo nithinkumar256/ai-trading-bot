@@ -44,6 +44,9 @@ def open_trade(trade):
 # =========================
 def update_trades(latest_prices):
 
+    if not isinstance(latest_prices, dict):
+        return {"error": "Invalid price data"}
+    
     trade = portfolio.get("open_trade")
 
     if not trade:

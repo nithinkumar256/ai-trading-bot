@@ -5,6 +5,7 @@ from app.services.binance_service import get_current_price
 
 bot_running = False
 
+
 def start_bot():
     global bot_running
 
@@ -17,9 +18,9 @@ def start_bot():
 
     run_bot()
 
+
 def run_bot():
     global bot_running
-    bot_running = True
 
     print("🚀 AUTO TRADING BOT STARTED")
 
@@ -31,16 +32,29 @@ def run_bot():
         try:
             trade = portfolio.get("open_trade")
 
+            # =========================
+            # TRACK OPEN TRADE
+            # =========================
             if trade:
                 symbol = trade["symbol"]
                 print("🔍 TRACKING:", symbol)
 
                 prices = get_current_price([symbol])
+
+                # 🔥 FIX: validate prices
+                if not isinstance(prices, dict) or symbol not in prices:
+                    print("❌ Invalid price data:", prices)
+                    time.sleep(5)
+                    continue
+
                 result = update_trades(prices)
 
                 print("📊 TRADE UPDATE:", result)
                 time.sleep(5)
 
+            # =========================
+            # SCAN MARKET
+            # =========================
             else:
                 print("🔍 Scanning market...")
                 scan_market()
