@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 
-BASE_URL = "https://api.binance.com"
+BASE_URL = "https://testnet.binance.vision"
 
 
 def get_klines(symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 100):
