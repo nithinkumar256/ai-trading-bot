@@ -5,9 +5,9 @@ ACCOUNT_BALANCE = 1000  # USDT (change later)
 RISK_PER_TRADE = 0.02   # 2% risk per trade
 
 
-def calculate_position(symbol_price, stop_loss_price):
+def calculate_position(symbol_price, stop_loss_price, balance):
     try:
-        risk_amount = ACCOUNT_BALANCE * RISK_PER_TRADE
+        risk_amount = balance * RISK_PER_TRADE
         stop_distance = abs(symbol_price - stop_loss_price)
 
         if stop_distance <= 0:
@@ -15,14 +15,13 @@ def calculate_position(symbol_price, stop_loss_price):
 
         quantity = risk_amount / stop_distance
 
-        # fallback for testing
         if quantity <= 0:
             return 1
 
         return round(quantity, 4)
 
     except:
-        return 1  # safe fallback
+        return 1
 
 
 def calculate_trade_levels(data):

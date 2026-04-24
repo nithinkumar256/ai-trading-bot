@@ -1,10 +1,17 @@
 import requests
+import time
 from app.services.binance_service import get_klines
 from app.services.indicator_service import calculate_indicators
 from app.services.risk_service import calculate_trade_levels, calculate_position
 from app.services.paper_trade_service import open_trade, portfolio
 
 BASE_URL = "https://api.binance.com"
+
+# =========================
+# 🔥 GLOBAL STATE (COOLDOWN)
+# =========================
+last_traded_symbol = None
+last_trade_time = 0
 
 
 # =========================
@@ -14,16 +21,13 @@ def get_top_symbols(limit=30):
     try:
         response = requests.get(f"{BASE_URL}/api/v3/ticker/24hr")
 
-        # ✅ CHECK STATUS
         if response.status_code != 200:
             print("❌ Binance API error:", response.text)
             return []
 
         data = response.json()
 
-        # ✅ CRITICAL FIX
         if not isinstance(data, list):
-            print("❌ Invalid Binance response:", data)
             return []
 
     except Exception as e:
@@ -33,22 +37,9 @@ def get_top_symbols(limit=30):
     valid_pairs = []
 
     for coin in data:
-        # ✅ SAFETY CHECK
-        if not isinstance(coin, dict):
-            continue
-
         symbol = coin.get("symbol")
 
         if not symbol or not symbol.endswith("USDT"):
-            continue
-
-        if any(x in symbol for x in [
-            "USDC", "BUSD", "FDUSD", "TUSD", "DAI",
-            "USD1", "RLUSD", "USDE", "EUR", "GBP", "UUSDT"
-        ]):
-            continue
-
-        if not symbol.isascii():
             continue
 
         try:
@@ -64,7 +55,7 @@ def get_top_symbols(limit=30):
             "volume": volume_24h
         })
 
-    return sorted(valid_pairs, key=lambda x: x["volume"], reverse=True)[:int(limit)]
+    return sorted(valid_pairs, key=lambda x: x["volume"], reverse=True)[:limit]
 
 
 # =========================
@@ -81,95 +72,110 @@ def calculate_score(data):
     close = data.get("close")
     vwap = data.get("vwap")
 
-    if rsi is not None:
-        if 30 <= rsi <= 45:
-            score += 25
-        elif 45 < rsi < 60:
-            score += 15
-        elif rsi > 70:
-            score -= 20
+    if rsi and 35 <= rsi <= 65:
+        score += 20
 
-    if ema9 and ema21:
-        score += 20 if ema9 > ema21 else -10
+    if ema9 and ema21 and ema9 > ema21:
+        score += 20
 
-    if macd and macd_signal:
-        score += 20 if macd > macd_signal else -10
+    if macd and macd_signal and macd > macd_signal:
+        score += 20
 
-    if close and vwap:
-        score += 15 if close > vwap else -10
+    if close and vwap and close > vwap:
+        score += 15
 
     return score
 
 
 # =========================
-# MAIN SCANNER (FIXED)
+# MAIN SCANNER (UPGRADED)
 # =========================
 def scan_market(limit=30):
 
-    # 🚫 DO NOT SCAN if trade already exists
+    global last_traded_symbol, last_trade_time
+
+    balance = portfolio["balance"]
+
     if portfolio["open_trade"] is not None:
         print("⏸ Trade already open, skipping scan...")
         return []
 
     symbols_data = get_top_symbols(limit)
-    results = []
 
     for coin in symbols_data:
         symbol = coin["symbol"]
-        market_volume = coin["volume"]
 
         try:
+            # ⛔ COOLDOWN (VERY IMPORTANT)
+            if symbol == last_traded_symbol and (time.time() - last_trade_time < 120):
+                continue
+
             df_5m = calculate_indicators(get_klines(symbol, "5m"))
             df_15m = calculate_indicators(get_klines(symbol, "15m"))
 
-            latest_5m = df_5m.iloc[-1].to_dict()
-            latest_15m = df_15m.iloc[-1].to_dict()
+            latest_5m = df_5m.iloc[-1]
+            latest_15m = df_15m.iloc[-1]
 
-            rsi_5m = latest_5m.get("rsi", 0)
-            close_5m = latest_5m.get("close")
-            vwap_5m = latest_5m.get("vwap")
+            close = latest_5m["close"]
 
-            ema9_15m = latest_15m.get("ema9")
-            ema21_15m = latest_15m.get("ema21")
+            # 🔥 PRICE FILTER
+            if close < 1:
+                continue
 
-            # TREND
-            trend = "SIDEWAYS"
-            if ema9_15m and ema21_15m:
-                if ema9_15m > ema21_15m:
-                    trend = "UP"
-                elif ema9_15m < ema21_15m:
-                    trend = "DOWN"
+            vwap = latest_5m["vwap"]
+            rsi = latest_5m["rsi"]
 
-            score = calculate_score(latest_5m)
+            ema9 = latest_15m["ema9"]
+            ema21 = latest_15m["ema21"]
 
-            print(symbol, {
-                "trend": trend,
-                "score": score,
-                "rsi": rsi_5m,
-                "close": close_5m,
-                "vwap": vwap_5m
-            })
+            trend = "UP" if ema9 > ema21 else "DOWN"
 
-            decision = "HOLD"
+            score = calculate_score(latest_5m.to_dict())
 
             # =========================
-            # BUY SIGNAL
+            # 🔥 STRONG FILTERS
+            # =========================
+
+            # Volume spike
+            volume = latest_5m["volume"]
+            avg_volume = df_5m["volume"].tail(20).mean()
+            volume_spike = volume > avg_volume * 1.3
+
+            # ATR filter
+            atr = latest_5m["atr"]
+            active_market = atr > (0.0005 * close)
+
+            # Breakout
+            recent_high = df_5m["high"].tail(20).max()
+            breakout = close > recent_high * 0.998
+
+            # 🔥 STRONG CANDLE (UPGRADE)
+            candle_body = abs(latest_5m["close"] - latest_5m["open"])
+            candle_range = latest_5m["high"] - latest_5m["low"]
+            strong_candle = candle_body > (0.6 * candle_range)
+
+            print(symbol, score, volume_spike, active_market, breakout)
+
+            # =========================
+            # 🚀 ENTRY LOGIC
             # =========================
             if (
                 trend == "UP" and
-                score >= 50 and
-                rsi_5m < 60 and
-                close_5m and vwap_5m and
-                close_5m > vwap_5m
+                score >= 55 and
+                rsi < 65 and
+                close > vwap and
+                strong_candle and
+                (volume_spike or breakout) and
+                active_market
             ):
-                decision = "BUY"
 
-                trade_levels = calculate_trade_levels(latest_5m)
+                trade_levels = calculate_trade_levels(latest_5m.to_dict())
 
                 if trade_levels:
                     qty = calculate_position(
                         trade_levels["entry"],
-                        trade_levels["stop_loss"]
+                        trade_levels["stop_loss"],
+                        balance
                     )
 
                     trade = {
@@ -177,31 +183,25 @@ def scan_market(limit=30):
                         "entry": trade_levels["entry"],
                         "stop_loss": trade_levels["stop_loss"],
                         "take_profit": trade_levels["take_profit"],
-                        "quantity": qty
+                        "quantity": qty,
+                        "trailing_level": 0
                     }
 
                     print(f"🚀 OPENING TRADE: {symbol}")
+
                     open_trade(trade)
 
-                    # ✅ STOP scanning after opening trade
-                    break
+                    # 🔥 SAVE LAST TRADE
+                    last_traded_symbol = symbol
+                    last_trade_time = time.time()
 
-            results.append({
-                "symbol": symbol,
-                "trend": trend,
-                "decision": decision,
-                "score": score,
-                "rsi_5m": round(rsi_5m, 2),
-                "volume_24h": market_volume
-            })
+                    break
 
         except Exception as e:
             print(f"Error {symbol}: {e}")
             continue
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)
-
-
+    return []
 # =========================
 # BEST TRADE
 # =========================

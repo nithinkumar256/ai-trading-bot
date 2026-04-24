@@ -13,16 +13,17 @@ portfolio = {
 # =========================
 def open_trade(trade):
 
-    # ✅ validate first
     if "symbol" not in trade:
         return {"error": "symbol missing"}
 
     if portfolio["open_trade"] is not None:
         return {"message": "Trade already open"}
 
+    # 🔥 Ensure trailing level exists
+    trade["trailing_level"] = 0
+
     portfolio["open_trade"] = trade
 
-    # ✅ send telegram AFTER success
     msg = (
         f"🚀 NEW TRADE OPENED\n\n"
         f"Symbol: {trade['symbol']}\n"
@@ -33,7 +34,6 @@ def open_trade(trade):
     )
 
     send_telegram(msg)
-
     print(f"✅ OPENED TRADE: {trade['symbol']}")
 
     return {"message": "Trade opened", "trade": trade}
@@ -46,7 +46,7 @@ def update_trades(latest_prices):
 
     if not isinstance(latest_prices, dict):
         return {"error": "Invalid price data"}
-    
+
     trade = portfolio.get("open_trade")
 
     if not trade:
@@ -59,63 +59,97 @@ def update_trades(latest_prices):
         return {"message": f"No price for {symbol}"}
 
     entry = trade["entry"]
-    sl = trade["stop_loss"]
     tp = trade["take_profit"]
     qty = trade["quantity"]
+
+    profit = (price - entry) * qty
+
+    # =========================
+    # 🔥 ADVANCED TRAILING STOP (FIXED)
+    # =========================
+    level = trade.get("trailing_level", 0)
+
+    # 🔥 EARLIER PROTECTION (CRITICAL FIX)
+    if profit > 1.5 and level < 1:
+        trade["stop_loss"] = entry
+        trade["trailing_level"] = 1
+        send_telegram(f"🔒 SL moved to ENTRY ({symbol})")
+
+    elif profit > 3 and level < 2:
+        trade["stop_loss"] = entry + (2 / qty)
+        trade["trailing_level"] = 2
+        send_telegram(f"🔒 Locked +2 profit ({symbol})")
+
+    elif profit > 5 and level < 3:
+        trade["stop_loss"] = entry + (4 / qty)
+        trade["trailing_level"] = 3
+        send_telegram(f"🔒 Locked +4 profit ({symbol})")
+
+    elif profit > 8 and level < 4:
+        trade["stop_loss"] = entry + (7 / qty)
+        trade["trailing_level"] = 4
+        send_telegram(f"🔒 Locked +7 profit ({symbol})")
+
+    elif profit > 12 and level < 5:
+        trade["stop_loss"] = entry + (10 / qty)
+        trade["trailing_level"] = 5
+        send_telegram(f"🔒 Locked +10 profit ({symbol})")
 
     # =========================
     # TAKE PROFIT
     # =========================
     if price >= tp:
-        profit = (tp - entry) * qty
-        portfolio["balance"] += profit
+        pnl = (tp - entry) * qty
+        portfolio["balance"] += pnl
 
-        result = {
+        send_telegram(
+            f"✅ TRADE WON\n{symbol}\n"
+            f"Profit: {round(pnl,2)}\n"
+            f"Balance: {round(portfolio['balance'],2)}"
+        )
+
+        portfolio["history"].append({
             "symbol": symbol,
             "result": "WIN",
-            "profit": round(profit, 2)
-        }
+            "profit": round(pnl, 2)
+        })
+
+        portfolio["open_trade"] = None
+        return {"result": "WIN", "pnl": round(pnl, 2)}
+
+    # =========================
+    # STOP LOSS / TRAILING EXIT (CRITICAL FIX)
+    # =========================
+    elif price <= trade["stop_loss"]:
+
+        # 🔥 FORCE EXIT AT SL PRICE (NOT MARKET PRICE)
+        exit_price = trade["stop_loss"]
+
+        pnl = (exit_price - entry) * qty
+        portfolio["balance"] += pnl
+
+        result_type = "WIN" if pnl > 0 else "LOSS"
 
         send_telegram(
-            f"✅ TRADE WON\n\n"
-            f"Symbol: {symbol}\n"
-            f"Profit: {round(profit, 2)}\n"
-            f"Balance: {round(portfolio['balance'], 2)}"
+            f"{'✅' if pnl > 0 else '❌'} TRADE CLOSED\n"
+            f"{symbol}\n"
+            f"PnL: {round(pnl,2)}\n"
+            f"Balance: {round(portfolio['balance'],2)}"
         )
 
-        portfolio["history"].append(result)
-        portfolio["open_trade"] = None
-
-        return result
-
-    # =========================
-    # STOP LOSS
-    # =========================
-    elif price <= sl:
-        loss = (entry - sl) * qty
-        portfolio["balance"] -= loss
-
-        result = {
+        portfolio["history"].append({
             "symbol": symbol,
-            "result": "LOSS",
-            "profit": round(-loss, 2)
-        }
+            "result": result_type,
+            "profit": round(pnl, 2)
+        })
 
-        send_telegram(
-            f"❌ TRADE LOST\n\n"
-            f"Symbol: {symbol}\n"
-            f"Loss: {round(loss, 2)}\n"
-            f"Balance: {round(portfolio['balance'], 2)}"
-        )
-
-        portfolio["history"].append(result)
         portfolio["open_trade"] = None
-
-        return result
+        return {"result": "CLOSED", "pnl": round(pnl, 2)}
 
     return {
         "message": "Trade still open",
-        "current_price": price
+        "current_price": price,
+        "pnl": round(profit, 2)
     }
 
 
@@ -124,7 +158,6 @@ def update_trades(latest_prices):
 # =========================
 def get_portfolio():
 
-    # ✅ safe copy
     data = {
         "balance": portfolio["balance"],
         "history": portfolio["history"],
